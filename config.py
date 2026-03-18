@@ -1,7 +1,11 @@
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env only in local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 # Angel One credentials
 ANGEL_API_KEY = os.getenv("ANGEL_API_KEY")
@@ -24,8 +28,8 @@ WATCHLIST = [
 ]
 
 # Strategy settings
-STOP_LOSS_PCT = 0.015   # 1.5% stop loss
-TARGET_PCT = 0.03       # 3% target (2:1 RR)
+STOP_LOSS_PCT = 0.015
+TARGET_PCT = 0.03
 CANDLE_INTERVAL = "FIVE_MINUTE"
 LOOKBACK_CANDLES = 100
 
@@ -33,5 +37,5 @@ LOOKBACK_CANDLES = 100
 MARKET_OPEN = os.getenv("MARKET_OPEN", "09:15")
 MARKET_CLOSE = os.getenv("MARKET_CLOSE", "15:20")
 
-# Paper trading mode - True = no real orders, only logs/alerts
-PAPER_TRADING = False
+# Paper trading mode
+PAPER_TRADING = os.getenv("PAPER_TRADING", "True").lower() in ("true", "1", "yes")
