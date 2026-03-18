@@ -2,9 +2,7 @@ name: Stock Trading Agent
 
 on:
   schedule:
-    # 09:15 IST = 03:45 UTC - Market open alert
     - cron: '45 3 * * 1-5'
-    # Every 5 min from 09:20 to 15:20 IST
     - cron: '50,55 3 * * 1-5'
     - cron: '0,5,10,15,20,25,30,35,40,45,50,55 4 * * 1-5'
     - cron: '0,5,10,15,20,25,30,35,40,45,50,55 5 * * 1-5'
@@ -12,64 +10,30 @@ on:
     - cron: '0,5,10,15,20,25,30,35,40,45,50,55 7 * * 1-5'
     - cron: '0,5,10,15,20,25,30,35,40,45,50,55 8 * * 1-5'
     - cron: '0,5,10,15,20,25,30,35,40,45,50,55 9 * * 1-5'
-    # 15:20 IST = 09:50 UTC - Market close alert
     - cron: '50 9 * * 1-5'
   workflow_dispatch:
 
-env:
-  ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
-  ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
-  ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
-  ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
-  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  CAPITAL_PER_TRADE: ${{ secrets.CAPITAL_PER_TRADE }}
-  MAX_OPEN_TRADES: ${{ secrets.MAX_OPEN_TRADES }}
-  MARKET_OPEN: "09:15"
-  MARKET_CLOSE: "15:20"
-  PAPER_TRADING: "False"
-
 jobs:
-  market-open-alert:
-    # Only runs at 03:45 UTC = 09:15 IST
-    if: ${{ github.event.schedule == '45 3 * * 1-5' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python -c "
-          import requests, os;
-          r = requests.post(f'https://api.telegram.org/bot{os.environ[\"TELEGRAM_BOT_TOKEN\"]}/sendMessage',
-          data={'chat_id': os.environ['TELEGRAM_CHAT_ID'], 'text': 'Market Open - Stock Agent Started\n09:15 IST - Scanning begins'});
-          print(r.json())"
-
   trade:
-    # Skip market open (03:45) and market close (09:50) - those are handled separately
-    if: ${{ github.event.schedule != '45 3 * * 1-5' && github.event.schedule != '50 9 * * 1-5' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    env:
+      ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
+      ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
+      ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
+      ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      CAPITAL_PER_TRADE: ${{ secrets.CAPITAL_PER_TRADE }}
+      MAX_OPEN_TRADES: ${{ secrets.MAX_OPEN_TRADES }}
+      MARKET_OPEN: "09:15"
+      MARKET_CLOSE: "15:20"
+      PAPER_TRADING: "False"
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python scan_once.py
-
-  market-close-alert:
-    # Only runs at 09:50 UTC = 15:20 IST
-    if: ${{ github.event.schedule == '50 9 * * 1-5' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python -c "
-          import requests, os;
-          r = requests.post(f'https://api.telegram.org/bot{os.environ[\"TELEGRAM_BOT_TOKEN\"]}/sendMessage',
-          data={'chat_id': os.environ['TELEGRAM_CHAT_ID'], 'text': 'Market Closed - 15:20 IST\nAll positions closed. Agent stopped.'});
-          print(r.json())"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run trading scan
+        run: python scan_once.py
