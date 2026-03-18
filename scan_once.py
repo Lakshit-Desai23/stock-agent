@@ -68,6 +68,7 @@ def main():
         send_alert(f"Login failed: {data.get('message')}")
         return
     logger.info("Login successful.")
+    send_alert("Agent Started - Scanning market...")
 
     # Load state
     open_positions = load_positions()
@@ -165,6 +166,7 @@ def main():
     save_positions(open_positions)
     save_pnl(daily_pnl)
     logger.info(f"Scan complete. Open: {list(open_positions.keys())} | Daily PnL: Rs.{daily_pnl:.2f}")
+    send_alert(f"Scan Done | Open: {list(open_positions.keys()) or 'None'} | Daily PnL: Rs.{daily_pnl:.2f}")
 
 
 if __name__ == "__main__":
