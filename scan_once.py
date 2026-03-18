@@ -85,6 +85,10 @@ def main():
         symbol = config.WATCHLIST[0]
         token = symbol_tokens.get(symbol)
         df = fetch_candles(smart_api, symbol, token)
+        if df is None or len(df) < 50:
+            logger.error("Cannot train model - no candle data.")
+            send_alert("Agent error: Cannot fetch candle data for training.")
+            return
         df = add_indicators(df)
         features = build_features(df)
         labels = create_labels(df.iloc[:len(features)])
@@ -120,6 +124,7 @@ def main():
         # New entry signal
         df = fetch_candles(smart_api, symbol, token)
         if df is None or len(df) < 50:
+            logger.warning(f"{symbol} - not enough candle data, skipping.")
             continue
         df = add_indicators(df)
         features = build_features(df)

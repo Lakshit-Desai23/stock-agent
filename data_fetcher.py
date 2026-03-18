@@ -12,7 +12,12 @@ def get_symbol_token(smart_api, symbol: str) -> str:
     try:
         data = smart_api.searchScrip("NSE", symbol)
         for item in data["data"]:
-            if item["tradingsymbol"] == symbol and item["instrumenttype"] == "EQ":
+            # Match exact EQ symbol
+            if item["tradingsymbol"] == f"{symbol}-EQ":
+                return item["symboltoken"]
+        # Fallback: first EQ type
+        for item in data["data"]:
+            if item["tradingsymbol"].endswith("-EQ"):
                 return item["symboltoken"]
     except Exception as e:
         logger.error(f"Token fetch failed for {symbol}: {e}")
