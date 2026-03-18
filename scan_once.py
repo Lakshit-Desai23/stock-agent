@@ -5,6 +5,7 @@ Positions JSON file ma save thase (GitHub artifact via cache).
 """
 import os
 import json
+import time
 import requests
 import pyotp
 from logzero import logger
@@ -78,22 +79,32 @@ def main():
         token = get_symbol_token(smart_api, symbol)
         if token:
             symbol_tokens[symbol] = token
+        time.sleep(0.5)  # avoid rate limit
 
-    # Train or load model
+    # Train or load model - try multiple symbols if first fails
     model, scaler = load_model()
     if not model:
-        symbol = config.WATCHLIST[0]
-        token = symbol_tokens.get(symbol)
-        df = fetch_candles(smart_api, symbol, token)
-        if df is None or len(df) < 50:
-            logger.error("Cannot train model - no candle data.")
-            send_alert("Agent error: Cannot fetch candle data for training.")
+        trained = False
+        for sym in config.WATCHLIST:
+            token = symbol_tokens.get(sym)
+            if not token:
+                continue
+            df = fetch_candles(smart_api, sym, token)
+            if df is None or len(df) < 50:
+                logger.warning(f"Cannot get candle data for {sym}, trying next...")
+                time.sleep(1)
+                continue
+            df = add_indicators(df)
+            features = build_features(df)
+            labels = create_labels(df.iloc[:len(features)])
+            min_len = min(len(features), len(labels))
+            model, scaler = train_model(features.iloc[:min_len], labels.iloc[:min_len])
+            trained = True
+            break
+        if not trained:
+            logger.error("Cannot train model - no candle data available.")
+            send_alert("Agent error: Market may be closed or API rate limit hit.")
             return
-        df = add_indicators(df)
-        features = build_features(df)
-        labels = create_labels(df.iloc[:len(features)])
-        min_len = min(len(features), len(labels))
-        model, scaler = train_model(features.iloc[:min_len], labels.iloc[:min_len])
 
     # Scan
     for symbol in config.WATCHLIST:
