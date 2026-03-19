@@ -1,7 +1,6 @@
 """
 Stock Trading Agent - scan_once.py
-Runs once per GitHub Actions trigger.
-Sends detailed Telegram alerts for BUY/SELL signals.
+Dynamic algorithm - auto-adapts to market conditions.
 """
 import os, json, time, requests, pyotp
 from datetime import datetime, timedelta, timezone
@@ -15,10 +14,14 @@ except ImportError:
     logging.basicConfig(level=logging.INFO)
 
 from SmartApi import SmartConnect
+import pandas as pd
+import numpy as np
 
 POSITIONS_FILE = "/tmp/open_positions.json"
 IST = timezone(timedelta(hours=5, minutes=30))
 
+
+# ─── Telegram ────────────────────────────────────────────────────────────────
 
 def send_alert(msg):
     try:
@@ -27,6 +30,8 @@ def send_alert(msg):
     except Exception as e:
         logger.error(f"Telegram: {e}")
 
+
+# ─── Positions ───────────────────────────────────────────────────────────────
 
 def load_positions():
     if os.path.exists(POSITIONS_FILE):
@@ -40,7 +45,9 @@ def save_positions(p):
         json.dump(p, f)
 
 
-def get_token(api, symbol, retries=2):
+# ─── Angel One API ───────────────────────────────────────────────────────────
+
+def get_token(api, symbol, retries=3):
     for attempt in range(retries):
         try:
             time.sleep(2)
@@ -49,7 +56,6 @@ def get_token(api, symbol, retries=2):
                 for item in data["data"]:
                     if item["tradingsymbol"] == f"{symbol}-EQ":
                         return item["symboltoken"]
-            logger.warning(f"Token {symbol}: not found in response")
         except Exception as e:
             logger.error(f"Token {symbol} attempt {attempt+1}: {e}")
             time.sleep(3)
@@ -57,48 +63,38 @@ def get_token(api, symbol, retries=2):
 
 
 def get_candles(api, token, symbol="", retries=3):
-    import pandas as pd
     to = datetime.now(IST)
-    frm = to - timedelta(days=10)
+    frm = to - timedelta(days=15)
     params = {
-        "exchange": "NSE",
-        "symboltoken": token,
+        "exchange": "NSE", "symboltoken": token,
         "interval": "FIVE_MINUTE",
         "fromdate": frm.strftime("%Y-%m-%d %H:%M"),
-        "todate": to.strftime("%Y-%m-%d %H:%M"),
+        "todate":   to.strftime("%Y-%m-%d %H:%M"),
     }
     for attempt in range(retries):
         try:
-            time.sleep(3 + attempt * 2)  # 3s, 5s, 7s
+            time.sleep(3 + attempt * 2)
             res = api.getCandleData(params)
             raw = res.get("data")
             if not raw:
-                logger.warning(f"Candles {symbol} attempt {attempt+1}: empty - msg={res.get('message')}")
+                logger.warning(f"Candles {symbol} attempt {attempt+1}: empty - {res.get('message')}")
                 continue
-
             rows = []
             for row in raw:
                 try:
                     rows.append({
-                        "ts":     row[0],
-                        "open":   float(row[1]),
-                        "high":   float(row[2]),
-                        "low":    float(row[3]),
-                        "close":  float(row[4]),
-                        "volume": float(row[5]),
+                        "ts": row[0], "open": float(row[1]), "high": float(row[2]),
+                        "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]),
                     })
                 except (IndexError, ValueError, TypeError):
                     continue
-
             if rows:
                 df = pd.DataFrame(rows)
                 logger.info(f"{symbol} candles: {len(df)}")
-                return df.tail(100)
-
+                return df.tail(120)
         except Exception as e:
             logger.error(f"Candles {symbol} attempt {attempt+1}: {e}")
             time.sleep(3)
-
     return None
 
 
@@ -108,98 +104,9 @@ def get_ltp(api, symbol, token):
         d = api.ltpData("NSE", symbol, token)
         if d and d.get("data"):
             return float(d["data"]["ltp"])
-        logger.warning(f"LTP {symbol}: no data - {d}")
     except Exception as e:
         logger.error(f"LTP {symbol}: {e}")
     return None
-
-
-def analyze(df):
-    import pandas as pd
-    c = df["close"]
-    h = df["high"]
-    l = df["low"]
-    v = df["volume"]
-
-    ema9  = c.ewm(span=9).mean()
-    ema21 = c.ewm(span=21).mean()
-    ema50 = c.ewm(span=50).mean()
-
-    delta = c.diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14).mean()
-    rs    = gain / loss.replace(0, 1e-9)
-    rsi   = 100 - (100 / (1 + rs))
-
-    ema12    = c.ewm(span=12).mean()
-    ema26    = c.ewm(span=26).mean()
-    macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9).mean()
-    macd_hist = macd_line - signal_line
-
-    sma20    = c.rolling(20).mean()
-    std20    = c.rolling(20).std()
-    bb_upper = sma20 + 2 * std20
-    bb_lower = sma20 - 2 * std20
-
-    ltp   = c.iloc[-1]
-    e9    = ema9.iloc[-1]
-    e21   = ema21.iloc[-1]
-    e50   = ema50.iloc[-1]
-    r     = rsi.iloc[-1]
-    mh    = macd_hist.iloc[-1]
-    mh_p  = macd_hist.iloc[-2] if len(macd_hist) > 1 else 0
-    bbu   = bb_upper.iloc[-1]
-    bbl   = bb_lower.iloc[-1]
-    avg_vol = v.rolling(20).mean().iloc[-1]
-    vol_r = v.iloc[-1] / avg_vol if avg_vol > 0 else 1
-
-    support    = round(l.tail(20).min(), 2)
-    resistance = round(h.tail(20).max(), 2)
-    trend = "Uptrend" if e9 > e21 > e50 else ("Downtrend" if e9 < e21 < e50 else "Sideways")
-
-    buy_score = sell_score = 0
-    reasons = []
-
-    if e9 > e21:
-        buy_score += 20; reasons.append("EMA9>EMA21 bullish")
-    else:
-        sell_score += 20; reasons.append("EMA9<EMA21 bearish")
-
-    if ltp > e50:
-        buy_score += 15; reasons.append("Above EMA50")
-    else:
-        sell_score += 15; reasons.append("Below EMA50")
-
-    if r < 35:
-        buy_score += 25; reasons.append(f"RSI oversold {r:.0f}")
-    elif r > 65:
-        sell_score += 25; reasons.append(f"RSI overbought {r:.0f}")
-    else:
-        buy_score += 5; reasons.append(f"RSI neutral {r:.0f}")
-
-    if mh > 0 and mh > mh_p:
-        buy_score += 20; reasons.append("MACD bullish crossover")
-    elif mh < 0 and mh < mh_p:
-        sell_score += 20; reasons.append("MACD bearish crossover")
-
-    if ltp <= bbl:
-        buy_score += 15; reasons.append("At lower Bollinger Band")
-    elif ltp >= bbu:
-        sell_score += 15; reasons.append("At upper Bollinger Band")
-
-    if vol_r > 1.5:
-        if buy_score > sell_score:
-            buy_score += 5
-        else:
-            sell_score += 5
-        reasons.append(f"High volume {vol_r:.1f}x")
-
-    if buy_score >= 50 and buy_score > sell_score:
-        return "BUY", min(buy_score, 100), r, trend, support, resistance, reasons
-    elif sell_score >= 50 and sell_score > buy_score:
-        return "SELL", min(sell_score, 100), r, trend, support, resistance, reasons
-    return "HOLD", 0, r, trend, support, resistance, reasons
 
 
 def place_order(api, symbol, token, side, qty):
@@ -223,6 +130,318 @@ def place_order(api, symbol, token, side, qty):
         logger.error(f"Order {symbol}: {e}")
     return None
 
+
+# ─── Indicators ──────────────────────────────────────────────────────────────
+
+def compute_indicators(df):
+    c = df["close"]
+    h = df["high"]
+    l = df["low"]
+    v = df["volume"]
+
+    # EMAs
+    ema9  = c.ewm(span=9,  adjust=False).mean()
+    ema21 = c.ewm(span=21, adjust=False).mean()
+    ema50 = c.ewm(span=50, adjust=False).mean()
+    ema200= c.ewm(span=200,adjust=False).mean()
+
+    # RSI
+    delta = c.diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    rsi   = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
+
+    # MACD
+    ema12 = c.ewm(span=12, adjust=False).mean()
+    ema26 = c.ewm(span=26, adjust=False).mean()
+    macd  = ema12 - ema26
+    signal_line = macd.ewm(span=9, adjust=False).mean()
+    hist  = macd - signal_line
+
+    # Bollinger Bands
+    sma20 = c.rolling(20).mean()
+    std20 = c.rolling(20).std()
+    bb_upper = sma20 + 2 * std20
+    bb_lower = sma20 - 2 * std20
+    bb_pct   = (c - bb_lower) / (bb_upper - bb_lower + 1e-9)  # 0=lower, 1=upper
+
+    # ATR (volatility)
+    tr = pd.concat([
+        h - l,
+        (h - c.shift()).abs(),
+        (l - c.shift()).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    atr_pct = atr / c * 100  # ATR as % of price
+
+    # Volume
+    vol_sma20 = v.rolling(20).mean()
+    vol_ratio = v / vol_sma20.replace(0, 1)
+
+    # Stochastic
+    low14  = l.rolling(14).min()
+    high14 = h.rolling(14).max()
+    stoch_k = 100 * (c - low14) / (high14 - low14 + 1e-9)
+    stoch_d = stoch_k.rolling(3).mean()
+
+    # Support / Resistance (pivot points from last 20 candles)
+    support    = round(l.tail(20).min(), 2)
+    resistance = round(h.tail(20).max(), 2)
+
+    return {
+        "close": c.iloc[-1], "prev_close": c.iloc[-2],
+        "ema9": ema9.iloc[-1], "ema21": ema21.iloc[-1],
+        "ema50": ema50.iloc[-1], "ema200": ema200.iloc[-1],
+        "ema9_prev": ema9.iloc[-2], "ema21_prev": ema21.iloc[-2],
+        "rsi": rsi.iloc[-1], "rsi_prev": rsi.iloc[-2],
+        "macd": macd.iloc[-1], "macd_prev": macd.iloc[-2],
+        "hist": hist.iloc[-1], "hist_prev": hist.iloc[-2],
+        "signal_line": signal_line.iloc[-1],
+        "bb_upper": bb_upper.iloc[-1], "bb_lower": bb_lower.iloc[-1],
+        "bb_pct": bb_pct.iloc[-1],
+        "atr": atr.iloc[-1], "atr_pct": atr_pct.iloc[-1],
+        "vol_ratio": vol_ratio.iloc[-1],
+        "stoch_k": stoch_k.iloc[-1], "stoch_d": stoch_d.iloc[-1],
+        "support": support, "resistance": resistance,
+        "high": df["high"].iloc[-1], "low": df["low"].iloc[-1],
+    }
+
+
+# ─── Market Regime Detection ─────────────────────────────────────────────────
+
+def detect_regime(df):
+    """
+    Detect if market is: TRENDING_UP, TRENDING_DOWN, SIDEWAYS, VOLATILE
+    This changes how we weight indicators.
+    """
+    c = df["close"]
+    h = df["high"]
+    l = df["low"]
+
+    ema20 = c.ewm(span=20).mean()
+    ema50 = c.ewm(span=50).mean()
+
+    # ADX - trend strength
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+    up_move   = h.diff().clip(lower=0)
+    down_move = (-l.diff()).clip(lower=0)
+    plus_di  = 100 * (up_move.rolling(14).mean()   / atr14.replace(0, 1e-9))
+    minus_di = 100 * (down_move.rolling(14).mean() / atr14.replace(0, 1e-9))
+    dx  = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
+    adx = dx.rolling(14).mean().iloc[-1]
+
+    # Volatility check
+    returns = c.pct_change().tail(20)
+    volatility = returns.std() * 100  # daily std %
+
+    e20 = ema20.iloc[-1]
+    e50 = ema50.iloc[-1]
+
+    if volatility > 2.0:
+        return "VOLATILE", adx
+    elif adx > 25:
+        if e20 > e50:
+            return "TRENDING_UP", adx
+        else:
+            return "TRENDING_DOWN", adx
+    else:
+        return "SIDEWAYS", adx
+
+
+# ─── Dynamic Signal Engine ───────────────────────────────────────────────────
+
+def analyze(df):
+    if len(df) < 50:
+        return "HOLD", 0, 0, 0, 50, "Unknown", 0, 0, []
+
+    ind = compute_indicators(df)
+    regime, adx = detect_regime(df)
+
+    buy_signals  = []
+    sell_signals = []
+    buy_score  = 0
+    sell_score = 0
+
+    ltp = ind["close"]
+
+    # ── 1. Trend Direction (weight depends on regime) ──
+    trend_weight = 30 if regime in ("TRENDING_UP", "TRENDING_DOWN") else 15
+
+    if ind["ema9"] > ind["ema21"] > ind["ema50"]:
+        buy_score += trend_weight
+        buy_signals.append("Strong uptrend (EMA stack)")
+    elif ind["ema9"] > ind["ema21"]:
+        buy_score += trend_weight // 2
+        buy_signals.append("EMA9>EMA21 bullish")
+    elif ind["ema9"] < ind["ema21"] < ind["ema50"]:
+        sell_score += trend_weight
+        sell_signals.append("Strong downtrend (EMA stack)")
+    elif ind["ema9"] < ind["ema21"]:
+        sell_score += trend_weight // 2
+        sell_signals.append("EMA9<EMA21 bearish")
+
+    # ── 2. EMA Crossover (fresh cross = strong signal) ──
+    ema_cross_buy  = ind["ema9_prev"] <= ind["ema21_prev"] and ind["ema9"] > ind["ema21"]
+    ema_cross_sell = ind["ema9_prev"] >= ind["ema21_prev"] and ind["ema9"] < ind["ema21"]
+    if ema_cross_buy:
+        buy_score += 20
+        buy_signals.append("Fresh EMA bullish crossover")
+    if ema_cross_sell:
+        sell_score += 20
+        sell_signals.append("Fresh EMA bearish crossover")
+
+    # ── 3. RSI (dynamic zones based on regime) ──
+    rsi = ind["rsi"]
+    if regime == "TRENDING_UP":
+        # In uptrend, RSI 40-70 is normal, <40 is oversold opportunity
+        if 40 <= rsi <= 65:
+            buy_score += 15
+            buy_signals.append(f"RSI healthy {rsi:.0f} in uptrend")
+        elif rsi < 40:
+            buy_score += 25
+            buy_signals.append(f"RSI oversold {rsi:.0f} - pullback buy")
+        elif rsi > 75:
+            sell_score += 15
+            sell_signals.append(f"RSI overbought {rsi:.0f}")
+    elif regime == "TRENDING_DOWN":
+        if rsi > 60:
+            sell_score += 25
+            sell_signals.append(f"RSI overbought {rsi:.0f} in downtrend")
+        elif 35 <= rsi <= 60:
+            sell_score += 15
+            sell_signals.append(f"RSI bearish zone {rsi:.0f}")
+    else:  # SIDEWAYS / VOLATILE
+        if rsi < 30:
+            buy_score += 25
+            buy_signals.append(f"RSI oversold {rsi:.0f}")
+        elif rsi > 70:
+            sell_score += 25
+            sell_signals.append(f"RSI overbought {rsi:.0f}")
+        elif 45 <= rsi <= 55:
+            pass  # neutral, no score
+
+    # RSI momentum (rising/falling)
+    if ind["rsi"] > ind["rsi_prev"] and rsi < 60:
+        buy_score += 5
+    elif ind["rsi"] < ind["rsi_prev"] and rsi > 40:
+        sell_score += 5
+
+    # ── 4. MACD ──
+    macd_cross_buy  = ind["hist_prev"] < 0 and ind["hist"] > 0
+    macd_cross_sell = ind["hist_prev"] > 0 and ind["hist"] < 0
+    macd_bull = ind["hist"] > 0 and ind["hist"] > ind["hist_prev"]
+    macd_bear = ind["hist"] < 0 and ind["hist"] < ind["hist_prev"]
+
+    if macd_cross_buy:
+        buy_score += 25
+        buy_signals.append("MACD bullish crossover")
+    elif macd_bull:
+        buy_score += 15
+        buy_signals.append("MACD histogram rising")
+
+    if macd_cross_sell:
+        sell_score += 25
+        sell_signals.append("MACD bearish crossover")
+    elif macd_bear:
+        sell_score += 15
+        sell_signals.append("MACD histogram falling")
+
+    # ── 5. Bollinger Bands ──
+    bb_pct = ind["bb_pct"]
+    if bb_pct < 0.2:  # near lower band
+        buy_score += 15
+        buy_signals.append(f"Near lower BB ({bb_pct:.0%})")
+    elif bb_pct > 0.8:  # near upper band
+        sell_score += 15
+        sell_signals.append(f"Near upper BB ({bb_pct:.0%})")
+
+    # BB squeeze breakout (low volatility -> expansion)
+    bb_width = (ind["bb_upper"] - ind["bb_lower"]) / ind["close"]
+    if bb_width < 0.02:  # tight squeeze
+        # Direction determined by EMA
+        if ind["ema9"] > ind["ema21"]:
+            buy_score += 10
+            buy_signals.append("BB squeeze - bullish breakout likely")
+        else:
+            sell_score += 10
+            sell_signals.append("BB squeeze - bearish breakout likely")
+
+    # ── 6. Stochastic ──
+    sk = ind["stoch_k"]
+    sd = ind["stoch_d"]
+    if sk < 20 and sd < 20 and sk > sd:
+        buy_score += 15
+        buy_signals.append(f"Stochastic oversold crossover {sk:.0f}")
+    elif sk > 80 and sd > 80 and sk < sd:
+        sell_score += 15
+        sell_signals.append(f"Stochastic overbought crossover {sk:.0f}")
+
+    # ── 7. Volume Confirmation (mandatory filter) ──
+    vol_ratio = ind["vol_ratio"]
+    vol_confirmed = vol_ratio > 1.2
+
+    if vol_ratio > 1.5:
+        if buy_score > sell_score:
+            buy_score += 10
+            buy_signals.append(f"Volume surge {vol_ratio:.1f}x confirms buy")
+        else:
+            sell_score += 10
+            sell_signals.append(f"Volume surge {vol_ratio:.1f}x confirms sell")
+    elif vol_ratio < 0.7:
+        # Low volume = weak signal, reduce scores
+        buy_score  = int(buy_score  * 0.8)
+        sell_score = int(sell_score * 0.8)
+
+    # ── 8. Price vs Key Levels ──
+    if ltp > ind["ema200"]:
+        buy_score += 10
+        buy_signals.append("Above EMA200 (long-term bullish)")
+    else:
+        sell_score += 10
+        sell_signals.append("Below EMA200 (long-term bearish)")
+
+    # Near support = buy opportunity
+    support_dist = (ltp - ind["support"]) / ltp
+    resist_dist  = (ind["resistance"] - ltp) / ltp
+    if support_dist < 0.01:  # within 1% of support
+        buy_score += 15
+        buy_signals.append(f"Near support Rs.{ind['support']}")
+    if resist_dist < 0.01:  # within 1% of resistance
+        sell_score += 15
+        sell_signals.append(f"Near resistance Rs.{ind['resistance']}")
+
+    # ── 9. Regime bonus ──
+    if regime == "TRENDING_UP" and buy_score > sell_score:
+        buy_score += 10
+    elif regime == "TRENDING_DOWN" and sell_score > buy_score:
+        sell_score += 10
+    elif regime == "VOLATILE":
+        # Reduce scores in volatile market - higher bar needed
+        buy_score  = int(buy_score  * 0.85)
+        sell_score = int(sell_score * 0.85)
+
+    # ── Determine trend label ──
+    if ind["ema9"] > ind["ema21"] > ind["ema50"]:
+        trend = "Uptrend"
+    elif ind["ema9"] < ind["ema21"] < ind["ema50"]:
+        trend = "Downtrend"
+    else:
+        trend = "Sideways"
+
+    # ── Final decision (threshold = 45) ──
+    THRESHOLD = 45
+    reasons = (buy_signals if buy_score > sell_score else sell_signals)[:4]
+
+    if buy_score >= THRESHOLD and buy_score > sell_score:
+        return "BUY",  min(buy_score, 100), buy_score, sell_score, rsi, trend, ind["support"], ind["resistance"], reasons
+    elif sell_score >= THRESHOLD and sell_score > buy_score:
+        return "SELL", min(sell_score, 100), buy_score, sell_score, rsi, trend, ind["support"], ind["resistance"], reasons
+
+    return "HOLD", 0, buy_score, sell_score, rsi, trend, ind["support"], ind["resistance"], reasons
+
+
+# ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
     now_ist = datetime.now(IST)
@@ -249,9 +468,10 @@ def main():
     mode = "PAPER" if config.PAPER_TRADING else "LIVE"
     send_alert(f"Market Open - Agent Started [{mode}]\nTime: {now} IST | Scanning {len(config.WATCHLIST)} stocks...")
 
-    positions = load_positions()
+    positions  = load_positions()
     new_trades = 0
-    skip_reasons = []
+    skip_reasons  = []
+    scan_summary  = []
 
     for symbol in config.WATCHLIST:
         try:
@@ -265,7 +485,7 @@ def main():
                 skip_reasons.append(f"{symbol}:no_ltp")
                 continue
 
-            # Exit check for open positions
+            # ── Exit check for open positions ──
             if symbol in positions:
                 pos = positions[symbol]
                 if pos["side"] == "BUY":
@@ -279,20 +499,31 @@ def main():
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
                         send_alert(f"STOP LOSS HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
                         del positions[symbol]
-                continue  # already in position, skip new entry
+                elif pos["side"] == "SELL":
+                    if ltp <= pos["target"]:
+                        place_order(api, symbol, token, "BUY", pos["qty"])
+                        pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
+                        send_alert(f"TARGET HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        del positions[symbol]
+                    elif ltp >= pos["sl"]:
+                        place_order(api, symbol, token, "BUY", pos["qty"])
+                        pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
+                        send_alert(f"STOP LOSS HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        del positions[symbol]
+                continue
 
             if len(positions) >= config.MAX_OPEN_TRADES:
-                skip_reasons.append(f"{symbol}:max_trades")
                 continue
 
             df = get_candles(api, token, symbol)
-            if df is None or len(df) < 30:
+            if df is None or len(df) < 50:
                 count = len(df) if df is not None else "None"
                 skip_reasons.append(f"{symbol}:candles({count})")
                 continue
 
-            signal, strength, rsi_val, trend, support, resistance, reasons = analyze(df)
-            logger.info(f"{symbol} -> {signal} ({strength}%) RSI:{rsi_val:.0f} @ Rs.{ltp}")
+            signal, strength, buy_sc, sell_sc, rsi_val, trend, support, resistance, reasons = analyze(df)
+            scan_summary.append(f"{symbol}:{signal}(B{buy_sc}/S{sell_sc})")
+            logger.info(f"{symbol} -> {signal} B={buy_sc} S={sell_sc} RSI={rsi_val:.0f} @ Rs.{ltp}")
 
             if signal == "HOLD":
                 continue
@@ -322,7 +553,7 @@ def main():
                     f"Trend: {trend}  RSI: {rsi_val:.0f}\n"
                     f"Support: Rs.{support}  Resistance: Rs.{resistance}\n"
                     f"Strength: {strength}%\n"
-                    f"Why: {', '.join(reasons[:3])}"
+                    f"Why: {', '.join(reasons)}"
                 )
 
         except Exception as e:
@@ -331,12 +562,14 @@ def main():
 
     save_positions(positions)
 
-    skip_summary = "\n".join(skip_reasons) if skip_reasons else "None"
+    scores_text = "  ".join(scan_summary) if scan_summary else "None"
+    skip_text   = ", ".join(skip_reasons) if skip_reasons else "None"
     send_alert(
         f"Scan Done [{mode}]\n"
         f"New trades: {new_trades}\n"
-        f"Open positions: {len(positions)} - {', '.join(positions.keys()) or 'None'}\n"
-        f"Skipped ({len(skip_reasons)}):\n{skip_summary}"
+        f"Open: {len(positions)} - {', '.join(positions.keys()) or 'None'}\n"
+        f"Scores: {scores_text}\n"
+        f"Skipped: {skip_text}"
     )
 
 
