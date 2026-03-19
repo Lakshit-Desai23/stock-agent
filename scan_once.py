@@ -4,18 +4,26 @@ Runs once per GitHub Actions trigger.
 Sends detailed Telegram alerts for BUY/SELL signals.
 """
 import os, json, time, requests, pyotp
-from datetime import datetime, timedelta
-from logzero import logger
-from SmartApi import SmartConnect
+from datetime import datetime, timedelta, timezone
 import config
 
+try:
+    from logzero import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO)
+
+from SmartApi import SmartConnect
+
 POSITIONS_FILE = "/tmp/open_positions.json"
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def send_alert(msg):
     try:
         url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": config.TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
+        requests.post(url, data={"chat_id": config.TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
         logger.error(f"Telegram: {e}")
 
@@ -32,53 +40,63 @@ def save_positions(p):
         json.dump(p, f)
 
 
-def get_token(api, symbol):
-    try:
-        time.sleep(2)  # increased rate limit delay
-        data = api.searchScrip("NSE", symbol)
-        for item in data["data"]:
-            if item["tradingsymbol"] == f"{symbol}-EQ":
-                return item["symboltoken"]
-    except Exception as e:
-        logger.error(f"Token {symbol}: {e}")
+def get_token(api, symbol, retries=2):
+    for attempt in range(retries):
+        try:
+            time.sleep(2)
+            data = api.searchScrip("NSE", symbol)
+            if data and data.get("data"):
+                for item in data["data"]:
+                    if item["tradingsymbol"] == f"{symbol}-EQ":
+                        return item["symboltoken"]
+            logger.warning(f"Token {symbol}: not found in response")
+        except Exception as e:
+            logger.error(f"Token {symbol} attempt {attempt+1}: {e}")
+            time.sleep(3)
     return None
 
 
-def get_candles(api, token):
+def get_candles(api, token, symbol=""):
     try:
-        time.sleep(3)  # rate limit
-        to = datetime.now()
-        frm = to - timedelta(days=5)
+        time.sleep(3)
+        to = datetime.now(IST)
+        frm = to - timedelta(days=10)
         res = api.getCandleData({
-            "exchange": "NSE", "symboltoken": token,
+            "exchange": "NSE",
+            "symboltoken": token,
             "interval": "FIVE_MINUTE",
             "fromdate": frm.strftime("%Y-%m-%d %H:%M"),
             "todate": to.strftime("%Y-%m-%d %H:%M"),
         })
         if res.get("status") and res.get("data"):
             import pandas as pd
-            df = pd.DataFrame(res["data"], columns=["ts","open","high","low","close","volume"])
-            # ts is timestamp string - convert only OHLCV to float
-            for col in ["open","high","low","close","volume"]:
+            df = pd.DataFrame(res["data"], columns=["ts", "open", "high", "low", "close", "volume"])
+            for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             df = df.dropna()
+            logger.info(f"{symbol} candles: {len(df)}")
             return df.tail(100)
+        else:
+            logger.warning(f"Candles {symbol}: status={res.get('status')} msg={res.get('message')}")
     except Exception as e:
-        logger.error(f"Candles: {e}")
+        logger.error(f"Candles {symbol}: {e}")
     return None
 
 
 def get_ltp(api, symbol, token):
     try:
-        time.sleep(0.5)
+        time.sleep(1)
         d = api.ltpData("NSE", symbol, token)
-        return float(d["data"]["ltp"])
+        if d and d.get("data"):
+            return float(d["data"]["ltp"])
+        logger.warning(f"LTP {symbol}: no data - {d}")
     except Exception as e:
         logger.error(f"LTP {symbol}: {e}")
     return None
 
 
 def analyze(df):
+    import pandas as pd
     c = df["close"]
     h = df["high"]
     l = df["low"]
@@ -91,31 +109,35 @@ def analyze(df):
     delta = c.diff()
     gain  = delta.clip(lower=0).rolling(14).mean()
     loss  = (-delta.clip(upper=0)).rolling(14).mean()
-    rsi   = 100 - (100 / (1 + gain/loss))
+    rs    = gain / loss.replace(0, 1e-9)
+    rsi   = 100 - (100 / (1 + rs))
 
-    ema12 = c.ewm(span=12).mean()
-    ema26 = c.ewm(span=26).mean()
-    macd_hist = (ema12 - ema26) - (ema12 - ema26).ewm(span=9).mean()
+    ema12    = c.ewm(span=12).mean()
+    ema26    = c.ewm(span=26).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9).mean()
+    macd_hist = macd_line - signal_line
 
-    sma20 = c.rolling(20).mean()
-    std20 = c.rolling(20).std()
-    bb_upper = sma20 + 2*std20
-    bb_lower = sma20 - 2*std20
+    sma20    = c.rolling(20).mean()
+    std20    = c.rolling(20).std()
+    bb_upper = sma20 + 2 * std20
+    bb_lower = sma20 - 2 * std20
 
-    ltp    = c.iloc[-1]
-    e9     = ema9.iloc[-1]
-    e21    = ema21.iloc[-1]
-    e50    = ema50.iloc[-1]
-    r      = rsi.iloc[-1]
-    mh     = macd_hist.iloc[-1]
-    mh_p   = macd_hist.iloc[-2]
-    bbu    = bb_upper.iloc[-1]
-    bbl    = bb_lower.iloc[-1]
-    vol_r  = v.iloc[-1] / v.rolling(20).mean().iloc[-1]
+    ltp   = c.iloc[-1]
+    e9    = ema9.iloc[-1]
+    e21   = ema21.iloc[-1]
+    e50   = ema50.iloc[-1]
+    r     = rsi.iloc[-1]
+    mh    = macd_hist.iloc[-1]
+    mh_p  = macd_hist.iloc[-2] if len(macd_hist) > 1 else 0
+    bbu   = bb_upper.iloc[-1]
+    bbl   = bb_lower.iloc[-1]
+    avg_vol = v.rolling(20).mean().iloc[-1]
+    vol_r = v.iloc[-1] / avg_vol if avg_vol > 0 else 1
 
     support    = round(l.tail(20).min(), 2)
     resistance = round(h.tail(20).max(), 2)
-    trend = "Uptrend" if e9>e21>e50 else ("Downtrend" if e9<e21<e50 else "Sideways")
+    trend = "Uptrend" if e9 > e21 > e50 else ("Downtrend" if e9 < e21 < e50 else "Sideways")
 
     buy_score = sell_score = 0
     reasons = []
@@ -138,28 +160,33 @@ def analyze(df):
         buy_score += 5; reasons.append(f"RSI neutral {r:.0f}")
 
     if mh > 0 and mh > mh_p:
-        buy_score += 20; reasons.append("MACD bullish")
+        buy_score += 20; reasons.append("MACD bullish crossover")
     elif mh < 0 and mh < mh_p:
-        sell_score += 20; reasons.append("MACD bearish")
+        sell_score += 20; reasons.append("MACD bearish crossover")
 
     if ltp <= bbl:
-        buy_score += 15; reasons.append("At lower BB")
+        buy_score += 15; reasons.append("At lower Bollinger Band")
     elif ltp >= bbu:
-        sell_score += 15; reasons.append("At upper BB")
+        sell_score += 15; reasons.append("At upper Bollinger Band")
 
     if vol_r > 1.5:
-        if buy_score > sell_score: buy_score += 5
-        else: sell_score += 5
-        reasons.append(f"High vol {vol_r:.1f}x")
+        if buy_score > sell_score:
+            buy_score += 5
+        else:
+            sell_score += 5
+        reasons.append(f"High volume {vol_r:.1f}x")
 
     if buy_score >= 55 and buy_score > sell_score:
-        return "BUY", min(buy_score,100), r, trend, support, resistance, reasons
+        return "BUY", min(buy_score, 100), r, trend, support, resistance, reasons
     elif sell_score >= 55 and sell_score > buy_score:
-        return "SELL", min(sell_score,100), r, trend, support, resistance, reasons
+        return "SELL", min(sell_score, 100), r, trend, support, resistance, reasons
     return "HOLD", 0, r, trend, support, resistance, reasons
 
 
 def place_order(api, symbol, token, side, qty):
+    if config.PAPER_TRADING:
+        logger.info(f"[PAPER] {side} {qty} x {symbol}")
+        return f"PAPER-{symbol}-{side}"
     try:
         res = api.placeOrder({
             "variety": "NORMAL",
@@ -179,71 +206,74 @@ def place_order(api, symbol, token, side, qty):
 
 
 def main():
-    # IST time (UTC+5:30)
-    from datetime import timezone, timedelta as td
-    ist = timezone(td(hours=5, minutes=30))
-    now = datetime.now(ist).strftime("%H:%M")
+    now_ist = datetime.now(IST)
+    now = now_ist.strftime("%H:%M")
 
     # Login
-    api = SmartConnect(api_key=config.ANGEL_API_KEY)
-    totp = pyotp.TOTP(config.ANGEL_TOTP_SECRET).now()
-    data = api.generateSession(config.ANGEL_CLIENT_ID, config.ANGEL_PASSWORD, totp)
-    if not data["status"]:
-        send_alert(f"Login failed: {data.get('message')}")
+    try:
+        api = SmartConnect(api_key=config.ANGEL_API_KEY)
+        totp = pyotp.TOTP(config.ANGEL_TOTP_SECRET).now()
+        data = api.generateSession(config.ANGEL_CLIENT_ID, config.ANGEL_PASSWORD, totp)
+        if not data["status"]:
+            send_alert(f"Login failed: {data.get('message')}")
+            return
+        logger.info("Login successful")
+    except Exception as e:
+        send_alert(f"Login error: {e}")
         return
 
     # Market hours check
     if not (config.MARKET_OPEN <= now <= config.MARKET_CLOSE):
-        send_alert(f"Market Closed ({now} IST)\nAgent will auto-run on market days 09:15-15:20")
+        send_alert(f"Market Closed ({now} IST)\nAgent will auto-run on market days {config.MARKET_OPEN}-{config.MARKET_CLOSE}")
         return
 
-    send_alert(f"Market Open - Agent Started\nTime: {now} IST | Scanning {len(config.WATCHLIST)} stocks...")
+    mode = "PAPER" if config.PAPER_TRADING else "LIVE"
+    send_alert(f"Market Open - Agent Started [{mode}]\nTime: {now} IST | Scanning {len(config.WATCHLIST)} stocks...")
 
     positions = load_positions()
     new_trades = 0
-    skipped = 0
+    skip_reasons = []
 
     for symbol in config.WATCHLIST:
         try:
             token = get_token(api, symbol)
             if not token:
-                logger.warning(f"{symbol} - token not found")
-                skipped += 1
+                skip_reasons.append(f"{symbol}:no_token")
                 continue
 
             ltp = get_ltp(api, symbol, token)
             if not ltp:
-                logger.warning(f"{symbol} - LTP not found")
-                skipped += 1
+                skip_reasons.append(f"{symbol}:no_ltp")
                 continue
 
-            # Exit check
+            # Exit check for open positions
             if symbol in positions:
                 pos = positions[symbol]
                 if pos["side"] == "BUY":
                     if ltp >= pos["target"]:
                         place_order(api, symbol, token, "SELL", pos["qty"])
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"TARGET HIT {symbol}\nEntry: Rs.{pos['entry']} Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        send_alert(f"TARGET HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
                         del positions[symbol]
                     elif ltp <= pos["sl"]:
                         place_order(api, symbol, token, "SELL", pos["qty"])
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"STOP LOSS {symbol}\nEntry: Rs.{pos['entry']} Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        send_alert(f"STOP LOSS HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
                         del positions[symbol]
-                continue
+                continue  # already in position, skip new entry
 
             if len(positions) >= config.MAX_OPEN_TRADES:
+                skip_reasons.append(f"{symbol}:max_trades")
                 continue
 
-            df = get_candles(api, token)
-            if df is None or len(df) < 50:
-                logger.warning(f"{symbol} - candle data insufficient ({len(df) if df is not None else 0} candles)")
-                skipped += 1
+            df = get_candles(api, token, symbol)
+            if df is None or len(df) < 30:
+                count = len(df) if df is not None else 0
+                skip_reasons.append(f"{symbol}:candles({count})")
                 continue
 
             signal, strength, rsi_val, trend, support, resistance, reasons = analyze(df)
-            logger.info(f"{symbol} -> {signal} ({strength}%) @ Rs.{ltp}")
+            logger.info(f"{symbol} -> {signal} ({strength}%) RSI:{rsi_val:.0f} @ Rs.{ltp}")
 
             if signal == "HOLD":
                 continue
@@ -259,10 +289,13 @@ def main():
                 oid    = place_order(api, symbol, token, "SELL", qty)
 
             if oid:
-                positions[symbol] = {"side": signal, "entry": ltp, "qty": qty, "sl": sl, "target": target}
+                positions[symbol] = {
+                    "side": signal, "entry": ltp,
+                    "qty": qty, "sl": sl, "target": target
+                }
                 new_trades += 1
                 send_alert(
-                    f"{'BUY' if signal=='BUY' else 'SHORT'} {symbol}\n"
+                    f"{'BUY' if signal == 'BUY' else 'SHORT'} {symbol} [{mode}]\n"
                     f"Price:  Rs.{ltp}\n"
                     f"Target: Rs.{target}  (+{config.TARGET_PCT*100:.1f}%)\n"
                     f"SL:     Rs.{sl}  (-{config.STOP_LOSS_PCT*100:.1f}%)\n"
@@ -275,13 +308,16 @@ def main():
 
         except Exception as e:
             logger.error(f"{symbol}: {e}")
+            skip_reasons.append(f"{symbol}:error")
 
     save_positions(positions)
+
+    skip_summary = "\n".join(skip_reasons) if skip_reasons else "None"
     send_alert(
-        f"Scan Done\n"
+        f"Scan Done [{mode}]\n"
         f"New trades: {new_trades}\n"
         f"Open positions: {len(positions)} - {', '.join(positions.keys()) or 'None'}\n"
-        f"Skipped: {skipped}"
+        f"Skipped ({len(skip_reasons)}):\n{skip_summary}"
     )
 
 
