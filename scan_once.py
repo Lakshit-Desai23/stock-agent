@@ -565,6 +565,7 @@ def main():
                 }
                 new_trades += 1
                 label = "BUY" if signal == "BUY" else "SHORT"
+                paper_note = "\n[PAPER - Place order manually on Angel One app]" if config.PAPER_TRADING else ""
                 send_alert(
                     f"{label} {symbol} [{mode}]\n"
                     f"Price:  Rs.{ltp}\n"
@@ -575,6 +576,7 @@ def main():
                     f"Support: Rs.{support}  Resistance: Rs.{resistance}\n"
                     f"Strength: {strength}%\n"
                     f"Why: {', '.join(reasons)}"
+                    f"{paper_note}"
                 )
 
         except Exception as e:

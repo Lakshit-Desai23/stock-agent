@@ -27,7 +27,7 @@ jobs:
       MAX_OPEN_TRADES: ${{ secrets.MAX_OPEN_TRADES }}
       MARKET_OPEN: "09:15"
       MARKET_CLOSE: "15:20"
-      PAPER_TRADING: "False"
+      PAPER_TRADING: "True"
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
