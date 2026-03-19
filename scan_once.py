@@ -56,52 +56,49 @@ def get_token(api, symbol, retries=2):
     return None
 
 
-def get_candles(api, token, symbol=""):
-    try:
-        time.sleep(3)
-        import pandas as pd
-        to = datetime.now(IST)
-        frm = to - timedelta(days=10)
-        res = api.getCandleData({
-            "exchange": "NSE",
-            "symboltoken": token,
-            "interval": "FIVE_MINUTE",
-            "fromdate": frm.strftime("%Y-%m-%d %H:%M"),
-            "todate": to.strftime("%Y-%m-%d %H:%M"),
-        })
+def get_candles(api, token, symbol="", retries=3):
+    import pandas as pd
+    to = datetime.now(IST)
+    frm = to - timedelta(days=10)
+    params = {
+        "exchange": "NSE",
+        "symboltoken": token,
+        "interval": "FIVE_MINUTE",
+        "fromdate": frm.strftime("%Y-%m-%d %H:%M"),
+        "todate": to.strftime("%Y-%m-%d %H:%M"),
+    }
+    for attempt in range(retries):
+        try:
+            time.sleep(3 + attempt * 2)  # 3s, 5s, 7s
+            res = api.getCandleData(params)
+            raw = res.get("data")
+            if not raw:
+                logger.warning(f"Candles {symbol} attempt {attempt+1}: empty - msg={res.get('message')}")
+                continue
 
-        # Log raw response for debugging
-        logger.info(f"Candles {symbol} raw: status={res.get('status')} msg={res.get('message')} data_len={len(res.get('data') or [])}")
+            rows = []
+            for row in raw:
+                try:
+                    rows.append({
+                        "ts":     row[0],
+                        "open":   float(row[1]),
+                        "high":   float(row[2]),
+                        "low":    float(row[3]),
+                        "close":  float(row[4]),
+                        "volume": float(row[5]),
+                    })
+                except (IndexError, ValueError, TypeError):
+                    continue
 
-        raw = res.get("data")
-        if not raw:
-            return None
+            if rows:
+                df = pd.DataFrame(rows)
+                logger.info(f"{symbol} candles: {len(df)}")
+                return df.tail(100)
 
-        # Angel One returns list of lists: [timestamp, open, high, low, close, volume]
-        rows = []
-        for row in raw:
-            try:
-                rows.append({
-                    "ts":     row[0],
-                    "open":   float(row[1]),
-                    "high":   float(row[2]),
-                    "low":    float(row[3]),
-                    "close":  float(row[4]),
-                    "volume": float(row[5]),
-                })
-            except (IndexError, ValueError, TypeError):
-                continue  # skip malformed rows
+        except Exception as e:
+            logger.error(f"Candles {symbol} attempt {attempt+1}: {e}")
+            time.sleep(3)
 
-        if not rows:
-            logger.warning(f"Candles {symbol}: all rows malformed")
-            return None
-
-        df = pd.DataFrame(rows)
-        logger.info(f"{symbol} candles parsed: {len(df)}")
-        return df.tail(100)
-
-    except Exception as e:
-        logger.error(f"Candles {symbol}: {e}")
     return None
 
 
@@ -198,9 +195,9 @@ def analyze(df):
             sell_score += 5
         reasons.append(f"High volume {vol_r:.1f}x")
 
-    if buy_score >= 55 and buy_score > sell_score:
+    if buy_score >= 50 and buy_score > sell_score:
         return "BUY", min(buy_score, 100), r, trend, support, resistance, reasons
-    elif sell_score >= 55 and sell_score > buy_score:
+    elif sell_score >= 50 and sell_score > buy_score:
         return "SELL", min(sell_score, 100), r, trend, support, resistance, reasons
     return "HOLD", 0, r, trend, support, resistance, reasons
 
