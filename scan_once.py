@@ -454,9 +454,24 @@ def analyze(df):
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
+def get_wallet_balance(api):
+    """Angel One se available cash balance fetch karo"""
+    try:
+        data = api.rmsLimit()
+        if data and data.get("data"):
+            d = data["data"]
+            # net = available cash for trading
+            balance = float(d.get("net", 0) or d.get("availablecash", 0) or 0)
+            return round(balance, 2)
+    except Exception as e:
+        logger.error(f"Wallet balance: {e}")
+    return None
+
+
 def main():
     now_ist = datetime.now(IST)
     now = now_ist.strftime("%H:%M")
+    is_market_open_time = config.MARKET_OPEN <= now <= config.MARKET_CLOSE
 
     # Login
     try:
@@ -471,18 +486,42 @@ def main():
         send_alert(f"Login error: {e}")
         return
 
+    # Wallet balance fetch
+    wallet = get_wallet_balance(api)
+    wallet_text = f"Rs.{wallet}" if wallet is not None else "N/A"
+
     # Market hours check
-    if not (config.MARKET_OPEN <= now <= config.MARKET_CLOSE):
-        send_alert(f"Market Closed ({now} IST)\nAgent will auto-run on market days {config.MARKET_OPEN}-{config.MARKET_CLOSE}")
+    if not is_market_open_time:
+        send_alert(f"Market Closed ({now} IST)\nWallet Balance: {wallet_text}\nAgent will auto-run on market days {config.MARKET_OPEN}-{config.MARKET_CLOSE}")
         return
 
     mode = "LIVE" if config.AUTO_TRADE else "ANALYSIS"
-    send_alert(f"Market Open - Agent Started [{mode}]\nTime: {now} IST | Scanning {len(config.WATCHLIST)} stocks...")
+    send_alert(
+        f"Market Open - Agent Started [{mode}]\n"
+        f"Time: {now} IST\n"
+        f"💰 Wallet Balance: {wallet_text}\n"
+        f"Scanning {len(config.WATCHLIST)} stocks..."
+    )
 
     positions  = load_positions()
     new_trades = 0
     skip_reasons  = []
     scan_summary  = []
+
+    # Capital per trade = 50% of wallet (agar wallet available ho)
+    if wallet and wallet > 0:
+        capital_per_trade = round(wallet * 0.5, 2)
+        # Minimum Rs.500 hona chahiye trade ke liye
+        if capital_per_trade < 500:
+            send_alert(f"⚠️ Wallet Low: {wallet_text}\nMinimum Rs.500 chahiye trade ke liye.\nSirf analysis mode mein chalega.")
+            auto_trade_allowed = False
+        else:
+            auto_trade_allowed = config.AUTO_TRADE
+    else:
+        capital_per_trade = config.CAPITAL_PER_TRADE
+        auto_trade_allowed = config.AUTO_TRADE
+
+    logger.info(f"Wallet: {wallet_text} | Capital per trade: Rs.{capital_per_trade} | Auto trade: {auto_trade_allowed}")
 
     for symbol in config.WATCHLIST:
         try:
@@ -502,23 +541,43 @@ def main():
                     if ltp >= pos["target"]:
                         place_order(api, symbol, token, "SELL", pos["qty"], ltp)
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"✅ TARGET HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        send_alert(
+                            f"✅ TARGET HIT {symbol}\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: +Rs.{pnl}\n"
+                            f"💰 Wallet: {wallet_text}"
+                        )
                         del positions[symbol]
                     elif ltp <= pos["sl"]:
                         place_order(api, symbol, token, "SELL", pos["qty"], ltp)
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"❌ STOP LOSS HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        send_alert(
+                            f"❌ STOP LOSS HIT {symbol}\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: Rs.{pnl}\n"
+                            f"💰 Wallet: {wallet_text}"
+                        )
                         del positions[symbol]
                 elif pos["side"] == "SELL":
                     if ltp <= pos["target"]:
                         place_order(api, symbol, token, "BUY", pos["qty"], ltp)
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(f"✅ TARGET HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        send_alert(
+                            f"✅ TARGET HIT {symbol} (SHORT)\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: +Rs.{pnl}\n"
+                            f"💰 Wallet: {wallet_text}"
+                        )
                         del positions[symbol]
                     elif ltp >= pos["sl"]:
                         place_order(api, symbol, token, "BUY", pos["qty"], ltp)
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(f"❌ STOP LOSS HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        send_alert(
+                            f"❌ STOP LOSS HIT {symbol} (SHORT)\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: Rs.{pnl}\n"
+                            f"💰 Wallet: {wallet_text}"
+                        )
                         del positions[symbol]
                 continue
 
@@ -538,49 +597,55 @@ def main():
             if signal == "HOLD":
                 continue
 
-            qty = max(int(config.CAPITAL_PER_TRADE / ltp), 1)
+            # Qty = wallet ka 50% se calculate karo
+            qty = max(int(capital_per_trade / ltp), 1)
+            trade_cost = round(ltp * qty, 2)
 
-            # Capital check - qty adjust karo MAX_CAPITAL ke andar
-            if ltp * qty > config.MAX_CAPITAL:
-                qty = max(int(config.MAX_CAPITAL / ltp), 1)
+            # Agar trade cost wallet se zyada ho to reject
+            if wallet and trade_cost > wallet:
+                send_alert(
+                    f"⚠️ INSUFFICIENT BALANCE\n"
+                    f"{symbol} trade cost: Rs.{trade_cost}\n"
+                    f"Wallet: {wallet_text}\n"
+                    f"Trade nahi hoga."
+                )
+                continue
 
             if signal == "BUY":
                 sl     = round(ltp * (1 - config.STOP_LOSS_PCT), 2)
                 target = round(ltp * (1 + config.TARGET_PCT), 2)
-                oid    = place_order(api, symbol, token, "BUY", qty, ltp)
+                oid    = place_order(api, symbol, token, "BUY", qty, ltp) if auto_trade_allowed else "ANALYSIS"
                 tgt_label = f"+{config.TARGET_PCT*100:.1f}%"
                 sl_label  = f"-{config.STOP_LOSS_PCT*100:.1f}%"
             else:
                 sl     = round(ltp * (1 + config.STOP_LOSS_PCT), 2)
                 target = round(ltp * (1 - config.TARGET_PCT), 2)
-                oid    = place_order(api, symbol, token, "SELL", qty, ltp)
+                oid    = place_order(api, symbol, token, "SELL", qty, ltp) if auto_trade_allowed else "ANALYSIS"
                 tgt_label = f"-{config.TARGET_PCT*100:.1f}%"
                 sl_label  = f"+{config.STOP_LOSS_PCT*100:.1f}%"
 
             if oid == "REJECTED":
-                send_alert(f"REJECTED {symbol}\nCost Rs.{round(ltp*qty)} > MAX_CAPITAL Rs.{config.MAX_CAPITAL:.0f}")
+                send_alert(f"⚠️ REJECTED {symbol}\nCost Rs.{trade_cost} > MAX_CAPITAL Rs.{config.MAX_CAPITAL:.0f}")
                 continue
 
-            mode_label = "LIVE" if config.AUTO_TRADE else "ANALYSIS"
-            trade_note = "" if config.AUTO_TRADE else "\n[Order NOT placed - AUTO_TRADE=False\nPlace manually on Angel One app]"
+            mode_label = "LIVE" if auto_trade_allowed else "ANALYSIS"
+            trade_note = "" if auto_trade_allowed else "\n[Order NOT placed - AUTO_TRADE=False\nPlace manually on Angel One app]"
 
             if oid:
-                if config.AUTO_TRADE:
+                if auto_trade_allowed and oid not in ("ANALYSIS", "REJECTED"):
                     positions[symbol] = {
                         "side": signal, "entry": ltp,
                         "qty": qty, "sl": sl, "target": target
                     }
                     new_trades += 1
 
-                label = "BUY" if signal == "BUY" else "SHORT"
-                action_line = "ACTION: BUY karo (price upar jayegi)" if signal == "BUY" else "ACTION: SELL/SHORT karo (price neeche jayegi)"
                 send_alert(
                     f"{'🟢 BUY' if signal == 'BUY' else '🔴 SHORT'} {symbol} [{mode_label}]\n"
-                    f"{action_line}\n"
+                    f"{'ACTION: BUY karo (price upar jayegi)' if signal == 'BUY' else 'ACTION: SELL/SHORT karo (price neeche jayegi)'}\n"
                     f"Price:  Rs.{ltp}\n"
                     f"Target: Rs.{target}  ({tgt_label})\n"
                     f"SL:     Rs.{sl}  ({sl_label})\n"
-                    f"Qty: {qty}  Capital: Rs.{round(ltp*qty)}\n"
+                    f"Qty: {qty}  Capital: Rs.{trade_cost}\n"
                     f"Trend: {trend}  RSI: {rsi_val:.0f}\n"
                     f"Support: Rs.{support}  Resistance: Rs.{resistance}\n"
                     f"Strength: {strength}%\n"
@@ -597,9 +662,10 @@ def main():
     skip_text = "\n".join(skip_reasons) if skip_reasons else "None"
     send_alert(
         f"Scan Done [{mode}]\n"
+        f"💰 Wallet: {wallet_text}\n"
         f"New trades: {new_trades}\n"
         f"Open positions: {len(positions)} - {', '.join(positions.keys()) or 'None'}\n"
-        f"Skipped ({len(skip_reasons)}):\n{skip_text}"
+        f"Skipped ({len(skip_reasons)}): {skip_text}"
     )
 
 
