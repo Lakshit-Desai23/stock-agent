@@ -109,10 +109,21 @@ def get_ltp(api, symbol, token):
     return None
 
 
-def place_order(api, symbol, token, side, qty):
+def place_order(api, symbol, token, side, qty, ltp):
+    # Capital check
+    cost = ltp * qty
+    if cost > config.MAX_CAPITAL:
+        logger.warning(f"Order rejected: {symbol} cost Rs.{cost:.0f} > MAX_CAPITAL Rs.{config.MAX_CAPITAL}")
+        return "REJECTED"
+
+    if not config.AUTO_TRADE:
+        logger.info(f"[ANALYSIS ONLY] {side} {qty} x {symbol} @ Rs.{ltp}")
+        return "ANALYSIS"
+
     if config.PAPER_TRADING:
         logger.info(f"[PAPER] {side} {qty} x {symbol}")
         return f"PAPER-{symbol}-{side}"
+
     try:
         res = api.placeOrder({
             "variety": "NORMAL",
@@ -465,7 +476,7 @@ def main():
         send_alert(f"Market Closed ({now} IST)\nAgent will auto-run on market days {config.MARKET_OPEN}-{config.MARKET_CLOSE}")
         return
 
-    mode = "PAPER" if config.PAPER_TRADING else "LIVE"
+    mode = "LIVE" if config.AUTO_TRADE else "ANALYSIS"
     send_alert(f"Market Open - Agent Started [{mode}]\nTime: {now} IST | Scanning {len(config.WATCHLIST)} stocks...")
 
     positions  = load_positions()
@@ -485,46 +496,29 @@ def main():
                 skip_reasons.append(f"{symbol}:no_ltp")
                 continue
 
-            # ── Exit check for open positions ──
             if symbol in positions:
                 pos = positions[symbol]
                 if pos["side"] == "BUY":
                     if ltp >= pos["target"]:
-                        place_order(api, symbol, token, "SELL", pos["qty"])
+                        place_order(api, symbol, token, "SELL", pos["qty"], ltp)
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(
-                            f"TARGET HIT {symbol}\n"
-                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
-                            f"Qty: {pos['qty']} | PnL: +Rs.{pnl}"
-                        )
+                        send_alert(f"TARGET HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
                         del positions[symbol]
                     elif ltp <= pos["sl"]:
-                        place_order(api, symbol, token, "SELL", pos["qty"])
+                        place_order(api, symbol, token, "SELL", pos["qty"], ltp)
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(
-                            f"STOP LOSS HIT {symbol}\n"
-                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
-                            f"Qty: {pos['qty']} | PnL: Rs.{pnl}"
-                        )
+                        send_alert(f"STOP LOSS HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
                         del positions[symbol]
                 elif pos["side"] == "SELL":
                     if ltp <= pos["target"]:
-                        place_order(api, symbol, token, "BUY", pos["qty"])
+                        place_order(api, symbol, token, "BUY", pos["qty"], ltp)
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(
-                            f"TARGET HIT {symbol} (SHORT)\n"
-                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
-                            f"Qty: {pos['qty']} | PnL: +Rs.{pnl}"
-                        )
+                        send_alert(f"TARGET HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
                         del positions[symbol]
                     elif ltp >= pos["sl"]:
-                        place_order(api, symbol, token, "BUY", pos["qty"])
+                        place_order(api, symbol, token, "BUY", pos["qty"], ltp)
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(
-                            f"STOP LOSS HIT {symbol} (SHORT)\n"
-                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
-                            f"Qty: {pos['qty']} | PnL: Rs.{pnl}"
-                        )
+                        send_alert(f"STOP LOSS HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
                         del positions[symbol]
                 continue
 
@@ -545,29 +539,42 @@ def main():
                 continue
 
             qty = max(int(config.CAPITAL_PER_TRADE / ltp), 1)
+
+            # Capital check - qty adjust karo MAX_CAPITAL ke andar
+            if ltp * qty > config.MAX_CAPITAL:
+                qty = max(int(config.MAX_CAPITAL / ltp), 1)
+
             if signal == "BUY":
                 sl     = round(ltp * (1 - config.STOP_LOSS_PCT), 2)
                 target = round(ltp * (1 + config.TARGET_PCT), 2)
-                oid    = place_order(api, symbol, token, "BUY", qty)
+                oid    = place_order(api, symbol, token, "BUY", qty, ltp)
                 tgt_label = f"+{config.TARGET_PCT*100:.1f}%"
                 sl_label  = f"-{config.STOP_LOSS_PCT*100:.1f}%"
             else:
                 sl     = round(ltp * (1 + config.STOP_LOSS_PCT), 2)
                 target = round(ltp * (1 - config.TARGET_PCT), 2)
-                oid    = place_order(api, symbol, token, "SELL", qty)
+                oid    = place_order(api, symbol, token, "SELL", qty, ltp)
                 tgt_label = f"-{config.TARGET_PCT*100:.1f}%"
                 sl_label  = f"+{config.STOP_LOSS_PCT*100:.1f}%"
 
+            if oid == "REJECTED":
+                send_alert(f"REJECTED {symbol}\nCost Rs.{round(ltp*qty)} > MAX_CAPITAL Rs.{config.MAX_CAPITAL:.0f}")
+                continue
+
+            mode_label = "LIVE" if config.AUTO_TRADE else "ANALYSIS"
+            trade_note = "" if config.AUTO_TRADE else "\n[Order NOT placed - AUTO_TRADE=False\nPlace manually on Angel One app]"
+
             if oid:
-                positions[symbol] = {
-                    "side": signal, "entry": ltp,
-                    "qty": qty, "sl": sl, "target": target
-                }
-                new_trades += 1
+                if config.AUTO_TRADE:
+                    positions[symbol] = {
+                        "side": signal, "entry": ltp,
+                        "qty": qty, "sl": sl, "target": target
+                    }
+                    new_trades += 1
+
                 label = "BUY" if signal == "BUY" else "SHORT"
-                paper_note = "\n[PAPER - Place order manually on Angel One app]" if config.PAPER_TRADING else ""
                 send_alert(
-                    f"{label} {symbol} [{mode}]\n"
+                    f"{label} {symbol} [{mode_label}]\n"
                     f"Price:  Rs.{ltp}\n"
                     f"Target: Rs.{target}  ({tgt_label})\n"
                     f"SL:     Rs.{sl}  ({sl_label})\n"
@@ -576,7 +583,7 @@ def main():
                     f"Support: Rs.{support}  Resistance: Rs.{resistance}\n"
                     f"Strength: {strength}%\n"
                     f"Why: {', '.join(reasons)}"
-                    f"{paper_note}"
+                    f"{trade_note}"
                 )
 
         except Exception as e:

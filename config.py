@@ -28,8 +28,8 @@ WATCHLIST = [
 ]
 
 # Strategy settings
-STOP_LOSS_PCT = 0.015
-TARGET_PCT = 0.03
+STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 1.0)) / 100
+TARGET_PCT    = float(os.getenv("TARGET_PCT", 2.0)) / 100
 CANDLE_INTERVAL = "FIVE_MINUTE"
 LOOKBACK_CANDLES = 100
 
@@ -39,3 +39,9 @@ MARKET_CLOSE = os.getenv("MARKET_CLOSE", "15:20")
 
 # Paper trading mode
 PAPER_TRADING = os.getenv("PAPER_TRADING", "True").lower() in ("true", "1", "yes")
+
+# Auto trade: True = real orders, False = analysis only (Telegram signals)
+AUTO_TRADE = os.getenv("AUTO_TRADE", "False").lower() in ("true", "1", "yes")
+
+# Max total capital - trades beyond this will be rejected
+MAX_CAPITAL = float(os.getenv("MAX_CAPITAL", 5000))
