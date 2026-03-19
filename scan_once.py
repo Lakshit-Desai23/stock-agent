@@ -34,7 +34,7 @@ def save_positions(p):
 
 def get_token(api, symbol):
     try:
-        time.sleep(1)  # rate limit
+        time.sleep(2)  # increased rate limit delay
         data = api.searchScrip("NSE", symbol)
         for item in data["data"]:
             if item["tradingsymbol"] == f"{symbol}-EQ":
@@ -46,7 +46,7 @@ def get_token(api, symbol):
 
 def get_candles(api, token):
     try:
-        time.sleep(1)  # rate limit
+        time.sleep(3)  # rate limit
         to = datetime.now()
         frm = to - timedelta(days=5)
         res = api.getCandleData({
@@ -58,7 +58,11 @@ def get_candles(api, token):
         if res.get("status") and res.get("data"):
             import pandas as pd
             df = pd.DataFrame(res["data"], columns=["ts","open","high","low","close","volume"])
-            return df.astype(float).tail(100)
+            # ts is timestamp string - convert only OHLCV to float
+            for col in ["open","high","low","close","volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna()
+            return df.tail(100)
     except Exception as e:
         logger.error(f"Candles: {e}")
     return None
@@ -203,11 +207,13 @@ def main():
         try:
             token = get_token(api, symbol)
             if not token:
+                logger.warning(f"{symbol} - token not found")
                 skipped += 1
                 continue
 
             ltp = get_ltp(api, symbol, token)
             if not ltp:
+                logger.warning(f"{symbol} - LTP not found")
                 skipped += 1
                 continue
 
@@ -232,6 +238,7 @@ def main():
 
             df = get_candles(api, token)
             if df is None or len(df) < 50:
+                logger.warning(f"{symbol} - candle data insufficient ({len(df) if df is not None else 0} candles)")
                 skipped += 1
                 continue
 
