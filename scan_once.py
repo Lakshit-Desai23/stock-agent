@@ -492,23 +492,39 @@ def main():
                     if ltp >= pos["target"]:
                         place_order(api, symbol, token, "SELL", pos["qty"])
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"TARGET HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        send_alert(
+                            f"TARGET HIT {symbol}\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: +Rs.{pnl}"
+                        )
                         del positions[symbol]
                     elif ltp <= pos["sl"]:
                         place_order(api, symbol, token, "SELL", pos["qty"])
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"STOP LOSS HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        send_alert(
+                            f"STOP LOSS HIT {symbol}\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: Rs.{pnl}"
+                        )
                         del positions[symbol]
                 elif pos["side"] == "SELL":
                     if ltp <= pos["target"]:
                         place_order(api, symbol, token, "BUY", pos["qty"])
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(f"TARGET HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        send_alert(
+                            f"TARGET HIT {symbol} (SHORT)\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: +Rs.{pnl}"
+                        )
                         del positions[symbol]
                     elif ltp >= pos["sl"]:
                         place_order(api, symbol, token, "BUY", pos["qty"])
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(f"STOP LOSS HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        send_alert(
+                            f"STOP LOSS HIT {symbol} (SHORT)\n"
+                            f"Entry: Rs.{pos['entry']} | Exit: Rs.{ltp}\n"
+                            f"Qty: {pos['qty']} | PnL: Rs.{pnl}"
+                        )
                         del positions[symbol]
                 continue
 
@@ -533,10 +549,14 @@ def main():
                 sl     = round(ltp * (1 - config.STOP_LOSS_PCT), 2)
                 target = round(ltp * (1 + config.TARGET_PCT), 2)
                 oid    = place_order(api, symbol, token, "BUY", qty)
+                tgt_label = f"+{config.TARGET_PCT*100:.1f}%"
+                sl_label  = f"-{config.STOP_LOSS_PCT*100:.1f}%"
             else:
                 sl     = round(ltp * (1 + config.STOP_LOSS_PCT), 2)
                 target = round(ltp * (1 - config.TARGET_PCT), 2)
                 oid    = place_order(api, symbol, token, "SELL", qty)
+                tgt_label = f"-{config.TARGET_PCT*100:.1f}%"
+                sl_label  = f"+{config.STOP_LOSS_PCT*100:.1f}%"
 
             if oid:
                 positions[symbol] = {
@@ -544,11 +564,12 @@ def main():
                     "qty": qty, "sl": sl, "target": target
                 }
                 new_trades += 1
+                label = "BUY" if signal == "BUY" else "SHORT"
                 send_alert(
-                    f"{'BUY' if signal == 'BUY' else 'SHORT'} {symbol} [{mode}]\n"
+                    f"{label} {symbol} [{mode}]\n"
                     f"Price:  Rs.{ltp}\n"
-                    f"Target: Rs.{target}  (+{config.TARGET_PCT*100:.1f}%)\n"
-                    f"SL:     Rs.{sl}  (-{config.STOP_LOSS_PCT*100:.1f}%)\n"
+                    f"Target: Rs.{target}  ({tgt_label})\n"
+                    f"SL:     Rs.{sl}  ({sl_label})\n"
                     f"Qty: {qty}  Capital: Rs.{round(ltp*qty)}\n"
                     f"Trend: {trend}  RSI: {rsi_val:.0f}\n"
                     f"Support: Rs.{support}  Resistance: Rs.{resistance}\n"
@@ -562,14 +583,12 @@ def main():
 
     save_positions(positions)
 
-    scores_text = "  ".join(scan_summary) if scan_summary else "None"
-    skip_text   = ", ".join(skip_reasons) if skip_reasons else "None"
+    skip_text = "\n".join(skip_reasons) if skip_reasons else "None"
     send_alert(
         f"Scan Done [{mode}]\n"
         f"New trades: {new_trades}\n"
-        f"Open: {len(positions)} - {', '.join(positions.keys()) or 'None'}\n"
-        f"Scores: {scores_text}\n"
-        f"Skipped: {skip_text}"
+        f"Open positions: {len(positions)} - {', '.join(positions.keys()) or 'None'}\n"
+        f"Skipped ({len(skip_reasons)}):\n{skip_text}"
     )
 
 
