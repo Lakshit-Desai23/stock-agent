@@ -175,7 +175,10 @@ def place_order(api, symbol, token, side, qty):
 
 
 def main():
-    now = datetime.now().strftime("%H:%M")
+    # IST time (UTC+5:30)
+    from datetime import timezone, timedelta as td
+    ist = timezone(td(hours=5, minutes=30))
+    now = datetime.now(ist).strftime("%H:%M")
 
     # Login
     api = SmartConnect(api_key=config.ANGEL_API_KEY)
