@@ -17,7 +17,7 @@ from SmartApi import SmartConnect
 import pandas as pd
 import numpy as np
 
-POSITIONS_FILE = "/tmp/open_positions.json"
+POSITIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "positions.json")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
