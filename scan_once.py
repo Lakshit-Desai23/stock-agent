@@ -502,23 +502,23 @@ def main():
                     if ltp >= pos["target"]:
                         place_order(api, symbol, token, "SELL", pos["qty"], ltp)
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"TARGET HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        send_alert(f"✅ TARGET HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
                         del positions[symbol]
                     elif ltp <= pos["sl"]:
                         place_order(api, symbol, token, "SELL", pos["qty"], ltp)
                         pnl = round((ltp - pos["entry"]) * pos["qty"], 2)
-                        send_alert(f"STOP LOSS HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        send_alert(f"❌ STOP LOSS HIT {symbol}\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
                         del positions[symbol]
                 elif pos["side"] == "SELL":
                     if ltp <= pos["target"]:
                         place_order(api, symbol, token, "BUY", pos["qty"], ltp)
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(f"TARGET HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
+                        send_alert(f"✅ TARGET HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: +Rs.{pnl}")
                         del positions[symbol]
                     elif ltp >= pos["sl"]:
                         place_order(api, symbol, token, "BUY", pos["qty"], ltp)
                         pnl = round((pos["entry"] - ltp) * pos["qty"], 2)
-                        send_alert(f"STOP LOSS HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
+                        send_alert(f"❌ STOP LOSS HIT {symbol} (SHORT)\nEntry: Rs.{pos['entry']} | Exit: Rs.{ltp}\nQty: {pos['qty']} | PnL: Rs.{pnl}")
                         del positions[symbol]
                 continue
 
@@ -573,8 +573,10 @@ def main():
                     new_trades += 1
 
                 label = "BUY" if signal == "BUY" else "SHORT"
+                action_line = "ACTION: BUY karo (price upar jayegi)" if signal == "BUY" else "ACTION: SELL/SHORT karo (price neeche jayegi)"
                 send_alert(
-                    f"{label} {symbol} [{mode_label}]\n"
+                    f"{'🟢 BUY' if signal == 'BUY' else '🔴 SHORT'} {symbol} [{mode_label}]\n"
+                    f"{action_line}\n"
                     f"Price:  Rs.{ltp}\n"
                     f"Target: Rs.{target}  ({tgt_label})\n"
                     f"SL:     Rs.{sl}  ({sl_label})\n"
