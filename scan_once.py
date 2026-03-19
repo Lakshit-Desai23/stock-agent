@@ -59,6 +59,7 @@ def get_token(api, symbol, retries=2):
 def get_candles(api, token, symbol=""):
     try:
         time.sleep(3)
+        import pandas as pd
         to = datetime.now(IST)
         frm = to - timedelta(days=10)
         res = api.getCandleData({
@@ -68,16 +69,37 @@ def get_candles(api, token, symbol=""):
             "fromdate": frm.strftime("%Y-%m-%d %H:%M"),
             "todate": to.strftime("%Y-%m-%d %H:%M"),
         })
-        if res.get("status") and res.get("data"):
-            import pandas as pd
-            df = pd.DataFrame(res["data"], columns=["ts", "open", "high", "low", "close", "volume"])
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df.dropna()
-            logger.info(f"{symbol} candles: {len(df)}")
-            return df.tail(100)
-        else:
-            logger.warning(f"Candles {symbol}: status={res.get('status')} msg={res.get('message')}")
+
+        # Log raw response for debugging
+        logger.info(f"Candles {symbol} raw: status={res.get('status')} msg={res.get('message')} data_len={len(res.get('data') or [])}")
+
+        raw = res.get("data")
+        if not raw:
+            return None
+
+        # Angel One returns list of lists: [timestamp, open, high, low, close, volume]
+        rows = []
+        for row in raw:
+            try:
+                rows.append({
+                    "ts":     row[0],
+                    "open":   float(row[1]),
+                    "high":   float(row[2]),
+                    "low":    float(row[3]),
+                    "close":  float(row[4]),
+                    "volume": float(row[5]),
+                })
+            except (IndexError, ValueError, TypeError):
+                continue  # skip malformed rows
+
+        if not rows:
+            logger.warning(f"Candles {symbol}: all rows malformed")
+            return None
+
+        df = pd.DataFrame(rows)
+        logger.info(f"{symbol} candles parsed: {len(df)}")
+        return df.tail(100)
+
     except Exception as e:
         logger.error(f"Candles {symbol}: {e}")
     return None
@@ -268,7 +290,7 @@ def main():
 
             df = get_candles(api, token, symbol)
             if df is None or len(df) < 30:
-                count = len(df) if df is not None else 0
+                count = len(df) if df is not None else "None"
                 skip_reasons.append(f"{symbol}:candles({count})")
                 continue
 
