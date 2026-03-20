@@ -440,8 +440,8 @@ def analyze(df):
     else:
         trend = "Sideways"
 
-    # ── Final decision (threshold = 45) ──
-    THRESHOLD = 45
+    # ── Final decision (threshold = 40) ──
+    THRESHOLD = 40
     reasons = (buy_signals if buy_score > sell_score else sell_signals)[:4]
 
     if buy_score >= THRESHOLD and buy_score > sell_score:
