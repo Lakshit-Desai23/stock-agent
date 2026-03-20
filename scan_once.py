@@ -508,12 +508,11 @@ def main():
     skip_reasons  = []
     scan_summary  = []
 
-    # Capital per trade = 50% of wallet (agar wallet available ho)
+    # Capital per trade = wallet (poora wallet use karo, qty se control hoga)
     if wallet and wallet > 0:
-        capital_per_trade = round(wallet * 0.5, 2)
-        # Minimum Rs.500 hona chahiye trade ke liye
-        if capital_per_trade < 500:
-            send_alert(f"⚠️ Wallet Low: {wallet_text}\nMinimum Rs.500 chahiye trade ke liye.\nSirf analysis mode mein chalega.")
+        capital_per_trade = wallet  # poora wallet available hai
+        if wallet < 200:
+            send_alert(f"⚠️ Wallet Low: {wallet_text}\nMinimum Rs.200 chahiye.\nSirf analysis mode mein chalega.")
             auto_trade_allowed = False
         else:
             auto_trade_allowed = config.AUTO_TRADE

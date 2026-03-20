@@ -3,7 +3,7 @@ import os
 # Load .env only in local development
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)  # override=True forces reload
 except Exception:
     pass
 
